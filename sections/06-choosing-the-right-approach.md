@@ -12,6 +12,8 @@ flowchart TD
     F -->|ASAP| G[Clerk / Auth0]
     F -->|Can invest time| E
     
+    C -->|Limited + passwordless| K[Magic Links]
+    
     D -->|Strict| H{Existing infrastructure?}
     D -->|Standard| G
     
@@ -22,6 +24,7 @@ flowchart TD
     style G fill:#9b59b6,stroke:#333,color:#fff
     style I fill:#e74c3c,stroke:#333,color:#fff
     style J fill:#3498db,stroke:#333,color:#fff
+    style K fill:#f39c12,stroke:#333,color:#fff
 ```
 
 ## Quick Decision Matrix
@@ -34,6 +37,8 @@ flowchart TD
 | **Privacy-first app** | Better Auth / Lucia | Self-hosted, data ownership |
 | **Mobile app** | Firebase Auth | Great mobile SDKs |
 | **Microservices** | JWT + JWKS | Stateless, decentralized |
+| **Internal tools** | Magic Links | No passwords to manage, simple UX |
+| **Infrequent login app** | Magic Links | Low friction, no credential fatigue |
 | **Enterprise / Regulated** | Keycloak / Okta | Compliance, audit trails |
 
 ---
@@ -46,7 +51,8 @@ Authentication is a critical piece of any application, and choosing the right ap
 2. **Own your data** - Consider self-hosted solutions like Better Auth as you scale
 3. **Never roll your own** - Unless you have specific requirements and security expertise
 4. **Layer your defenses** - MFA, rate limiting, secure token storage
-5. **Plan for scale** - Consider stateless auth for microservices
+5. **Go passwordless when it fits** - Magic links reduce attack surface for internal tools and low-frequency apps
+6. **Plan for scale** - Consider stateless auth for microservices
 
 The TypeScript ecosystem has excellent options at every level. Pick the one that matches your team's expertise and your application's requirements.
 

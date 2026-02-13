@@ -167,4 +167,232 @@ interface AuthStrategy {
 
 ---
 
+## 5. Magic Link (Passwordless) Authentication
+
+Magic link authentication lets users sign in by clicking a unique, time-limited link sent to their email — no password required.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant App as Your App
+    participant DB as Database
+    participant Email as Email Service
+
+    U->>App: POST /auth/magic-link<br/>{email: "user@example.com"}
+    App->>App: Generate secure token
+    App->>DB: Store token + expiry + email
+    App->>Email: Send magic link email
+    Email-->>U: 📧 "Click here to sign in"
+    App-->>U: "Check your email!"
+
+    Note over U: User clicks link in email
+
+    U->>App: GET /auth/verify?token=abc123
+    App->>DB: Lookup token
+    DB-->>App: Token valid ✓
+    App->>DB: Invalidate token (single-use)
+    App->>App: Create session / issue JWT
+    App-->>U: Set-Cookie + redirect to dashboard
+```
+
+| ✅ Strengths | ❌ Weaknesses |
+|-------------|--------------|
+| No passwords to remember or leak | Requires access to email |
+| Eliminates credential stuffing attacks | Slower UX (email delivery delay) |
+| Simpler sign-up flow | Email deliverability issues |
+| No password reset flow needed | Phishing risk (fake emails) |
+| Great for infrequent-use apps | Relies on email provider security |
+
+**Best for:** SaaS products, internal tools, apps where users log in infrequently, and teams that want to minimize password-related support tickets.
+
+### Implementation
+
+```typescript
+// src/auth/magic-link.ts
+import crypto from 'node:crypto';
+
+interface MagicLinkToken {
+  token: string;
+  email: string;
+  expiresAt: Date;
+  used: boolean;
+}
+
+// In production, use your database — this is illustrative
+const tokenStore = new Map<string, MagicLinkToken>();
+
+/**
+ * Generate a cryptographically secure magic link token
+ */
+export function createMagicLinkToken(email: string): string {
+  // Invalidate any existing tokens for this email
+  for (const [key, entry] of tokenStore) {
+    if (entry.email === email) {
+      tokenStore.delete(key);
+    }
+  }
+
+  const token = crypto.randomBytes(32).toString('base64url');
+
+  tokenStore.set(token, {
+    token,
+    email,
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutes
+    used: false,
+  });
+
+  return token;
+}
+
+/**
+ * Verify a magic link token and return the associated email
+ */
+export function verifyMagicLinkToken(token: string): string | null {
+  const entry = tokenStore.get(token);
+
+  if (!entry) return null;
+  if (entry.used) return null;
+
+  if (new Date() > entry.expiresAt) {
+    tokenStore.delete(token);
+    return null;
+  }
+
+  // Mark as used (single-use enforcement)
+  entry.used = true;
+  tokenStore.delete(token);
+
+  return entry.email;
+}
+```
+
+```typescript
+// src/routes/magic-link.ts
+import { Router, Request, Response } from 'express';
+import { createMagicLinkToken, verifyMagicLinkToken } from '../auth/magic-link';
+import { sendMagicLinkEmail } from '../email/sender';
+import { generateTokens } from '../auth/jwt';
+
+const router = Router();
+const BASE_URL = process.env.BASE_URL!;
+
+// Step 1: User requests a magic link
+router.post('/auth/magic-link', async (req: Request, res: Response) => {
+  const { email } = req.body;
+
+  if (!email || typeof email !== 'string') {
+    res.status(400).json({ error: 'Valid email is required' });
+    return;
+  }
+
+  const token = createMagicLinkToken(email.toLowerCase().trim());
+  const magicLink = `${BASE_URL}/auth/verify?token=${token}`;
+
+  try {
+    await sendMagicLinkEmail(email, magicLink);
+  } catch (error) {
+    console.error('Failed to send magic link email:', error);
+  }
+
+  // Always return success to prevent email enumeration
+  res.json({ message: 'If that email is registered, a sign-in link has been sent.' });
+});
+
+// Step 2: User clicks the link in their email
+router.get('/auth/verify', async (req: Request, res: Response) => {
+  const { token } = req.query;
+
+  if (!token || typeof token !== 'string') {
+    res.status(400).json({ error: 'Invalid link' });
+    return;
+  }
+
+  const email = verifyMagicLinkToken(token);
+
+  if (!email) {
+    res.status(401).json({ error: 'Link is invalid or has expired' });
+    return;
+  }
+
+  // Find or create user in your database
+  // const user = await db.user.upsert({ ... });
+
+  const tokens = generateTokens({ userId: 'user-id-from-db', email, roles: ['user'] });
+
+  res.cookie('session', tokens.accessToken, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+
+  res.redirect('/dashboard');
+});
+
+export default router;
+```
+
+### Better Auth Magic Link Plugin
+
+```typescript
+// Server — src/lib/auth.ts
+import { betterAuth } from 'better-auth';
+import { magicLink } from 'better-auth/plugins';
+
+export const auth = betterAuth({
+  // ... database & other config
+  plugins: [
+    magicLink({
+      sendMagicLink: async ({ email, token, url }) => {
+        await sendEmail({
+          to: email,
+          subject: 'Your sign-in link',
+          html: `<a href="${url}">Click here to sign in</a>`,
+        });
+      },
+      expiresIn: 60 * 15, // 15 minutes (in seconds)
+    }),
+  ],
+});
+```
+
+```typescript
+// Client — src/lib/auth-client.ts
+import { createAuthClient } from 'better-auth/react';
+import { magicLinkClient } from 'better-auth/client/plugins';
+
+export const authClient = createAuthClient({
+  baseURL: process.env.NEXT_PUBLIC_APP_URL!,
+  plugins: [magicLinkClient()],
+});
+
+// Usage: authClient.signIn.magicLink({ email, callbackURL: '/dashboard' })
+```
+
+### Security Checklist for Magic Links
+
+| Practice | Why |
+|----------|-----|
+| **Short expiry (10–15 min)** | Limits the window for interception |
+| **Single-use tokens** | Prevents replay attacks |
+| **Cryptographically random tokens** | Use `crypto.randomBytes`, not `Math.random` |
+| **Constant-time comparison** | Prevents timing attacks when verifying tokens |
+| **Rate limiting** | Prevents email flooding / abuse |
+| **Generic responses** | "If that email is registered…" prevents email enumeration |
+| **HTTPS only** | Tokens in URLs must never travel over plain HTTP |
+
+### When to Choose Magic Links
+
+| Scenario | Magic Links | Password | OAuth/SSO |
+|----------|:-----------:|:--------:|:---------:|
+| Internal tools | ✅ Great | ⚠️ OK | ✅ Great |
+| Consumer SaaS | ✅ Great | ✅ Great | ✅ Great |
+| High-frequency login | ❌ Slow | ✅ Great | ✅ Great |
+| Mobile apps | ⚠️ Friction | ✅ Great | ✅ Great |
+| No email access | ❌ No | ✅ Great | ✅ Great |
+| Security-critical | ✅ + MFA | ⚠️ Risky | ✅ Great |
+
+---
+
 [← Back to Authentication Guide](../Authentication-Guide.md)

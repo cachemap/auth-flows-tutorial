@@ -43,6 +43,7 @@ Comparing different architectural approaches to authentication.
 - Custom-Built Systems — when and why (almost never)
 - Session-Based vs Token-Based Authentication
 - Hybrid approach (recommended)
+- Magic Link (Passwordless) Authentication — flow, implementation, and security
 
 ### 5. [Security Best Practices](sections/05-security-best-practices.md)
 Essential security patterns every developer should follow.
